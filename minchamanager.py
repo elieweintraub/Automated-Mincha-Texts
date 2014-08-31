@@ -1,5 +1,6 @@
 from datetime import datetime
 from log import Log
+from trivia import get_question
 
 
 class State:
@@ -15,7 +16,7 @@ class State:
         elif state == State.CONFIRMED: return "CONFIRMED"
         elif state == State.PANIC: return "PANIC"
 
-    
+
 class MinchaManager:
     def __init__(self, mail_client,log):
         # initialize schedule
@@ -28,10 +29,11 @@ class MinchaManager:
         self.loop = True
         self.confirmed_time = None
         self.next = None
-        
+        self.trivia_question = None
+
         self.log = log
         self.log.INFO("Starting Manager: Current schedule is ",self.schedule)
-        
+
     # deal with weirdly formatted texts *ahem* vzwpix *ahem*
     def validify_content(self,content):
         valid_list = ['q','s','y','i','f','a','0','1','2','3','4','5','6','7','8','9','*']
@@ -40,20 +42,20 @@ class MinchaManager:
             if len(line) > 0 and line[0] in valid_list:
                 c.append(line)
         return '\n'.join(c)
-    
+
     def processMsg(self,msg):
         address = msg[0]
         subject = msg[1]
         content = msg[2]
         content = self.validify_content(content)
-        
+
         if len(content) == 0:
             return
-        if len(content) > 4 and content[:4]=="PASSWORD": 
+        if len(content) > 4 and content[:4]=="PASSWORD":
             password = True
             content = content[4:]
         else: password = False
-        
+
         if content[0] == 'q' and password: # quit
             self.loop = False
             self.log.INFO("Received: q")
@@ -68,7 +70,7 @@ class MinchaManager:
             self.log.INFO("Received:",content[0]," # respondents:",self.respondents)
         elif content[0] == 'c' and (self.state == State.WAITING or self.state == CONFIRMED): #rescind positive mincha response
             self.respondents -= 1
-            self.log.INFO("Received:",content[0]," # respondents:",self.respondents)	
+            self.log.INFO("Received:",content[0]," # respondents:",self.respondents)
         elif content[0] == 'a' and len(content) > 1: # add contact
             self.mailclient.addContact(address,content[1:])
             self.log.INFO("Received:",content[0])
@@ -87,11 +89,11 @@ class MinchaManager:
         elif content[0] == 'f': # forward message to me
             self.mailclient.sendMail("FWD: " + address,\
                         "SUBJECT: " + subject + "\n"+content[1:],to="ME")
-            
+
         else:
             self.mailclient.sendMail("Invalid Response","Your repsonse is invalid. Please check your formatting or github.com/Krittian/Automated-Mincha-Texts",to=address)
-            
-            
+
+
     def addSchedule(self,sched="from file"):
         # format for schedule is as a newline separated list with the following cronlike time format
         # m h d M Y wait_limit "msg"
@@ -122,7 +124,7 @@ class MinchaManager:
             file.write('\n')
             file.close()
             lines = sched.splitlines()
-        
+
         for line in lines:
             nline = []
             l = line.find('"')
@@ -150,7 +152,7 @@ class MinchaManager:
                     for H in nline[1] for M in nline[0]]
             if append == True: self.schedule.extend(l)
             else: self.schedule = l
-                
+
     def checkSchedule(self):
         t = datetime.now()
         m = 9999
@@ -162,7 +164,7 @@ class MinchaManager:
                 e_min = e
         self.next = e_min
         if e_min == None: return
-        
+
         if self.state == State.FREE and 0 < dt and dt <= e_min.wait_range:
             self.state = State.WAITING
             self.respondents = 0
@@ -172,17 +174,25 @@ class MinchaManager:
                 msg = e_min.msg
             msg = msg.replace("%t",str(e_min))
             subj = subj.replace("%t",str(e_min))
+            if self.trivia_question == None or t.date() != self.trivia_question[0]:
+                self.trivia_question = (t.date(), get_question())
+                msg += " Todays jeopardy category is: %s. The answer is: %s. \
+                    The answer when we get a minyan." % \
+                    (self.trivia_question[1][0], self.trivia_question[1][1])
             self.mailclient.sendMail(subj,msg,to="ALL")
-            
+
         elif self.state == State.WAITING and \
              self.respondents >= State.MIN_CONFIRMED and \
              dt > 0: # TODO should it be >= 0, or would that be too close?
             self.state = State.CONFIRMED
             self.confirmed_time = datetime.now()
-            msg = "Mincha confirmed for %t"
+            msg = "Mincha confirmed for %t."
             msg = msg.replace("%t",str(e_min))
+            if self.trivia_question != None and t.date() == self.trivia_question[0]:
+              msg += " The answer to todays jeopardy question is: %s. Thanks for playling!" % \
+                  (self.trivia_question[1][2])
             self.mailclient.sendMail("Confirmed "+str(e_min),msg,to="ALL")
-        
+
          elif self.state == State.CONFIRMED and \
              self.respondents < State.MIN_CONFIRMED and \
              dt > 0: # TODO should it be >= 0, or would that be too close?
@@ -192,20 +202,21 @@ class MinchaManager:
             msg = msg.replace("%t",str(e_min))
             msg = msg.replace("%n",self.respondents)
             self.mailclient.sendMail("Unconfirmed "+str(e_min),msg,to="ALL")
-        
+
         elif self.state == State.WAITING and dt <= 0:
             self.state = State.FREE
             msg = "Not enough for %t."
             msg = msg.replace("%t",str(e_min))
             self.mailclient.sendMail("Failure",msg,to="ALL")
-        
+
         elif self.state == State.CONFIRMED:
             pass
-        
+
+
         # quit, so we can restart tomorrow
         if t.time() >= datetime(1,1,1,23,00).time():
             self.loop = False
-    
+
 
 class Event(object):
     def __init__(self, evt_time,day,month,dow,msg="",wait_range="40"):
